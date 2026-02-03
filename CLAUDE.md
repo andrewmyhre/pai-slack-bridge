@@ -1,3 +1,54 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code when working in this repository.
+
+## Project Overview
+
+PAI Slack Bridge connects Slack to a locally running Claude Code CLI, enabling PAI system access from anywhere via Slack messages.
+
+## Build & Run Commands
+
+```bash
+# Install dependencies
+bun install
+
+# Run the bridge
+bun run start
+
+# Run tests
+bun test
+
+# Type check
+bun run typecheck
+```
+
+## Architecture
+
+- `src/index.ts` - Entry point, initializes Slack app
+- `src/slack/` - Slack Bolt SDK handlers
+- `src/bridge/` - Claude Code CLI integration
+- `src/config/` - Configuration management
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+- `SLACK_BOT_TOKEN` - Bot OAuth token (xoxb-*)
+- `SLACK_APP_TOKEN` - App-level token for Socket Mode (xapp-*)
+
+## Working Agreements
+
+**Commits:**
+- Follow conventional commits style
+- Keep commits focused and atomic
+
+**GitHub Issues:**
+- Reference issues in commit messages when relevant
+
+**Testing:**
+- Add tests for new functionality
+- Run `bun test` before committing
+
+## Tech Stack
 
 Default to using Bun instead of Node.js.
 
