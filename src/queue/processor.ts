@@ -12,6 +12,13 @@ import type { SlackJob, QueueConfig } from "./types";
 import { DEFAULT_QUEUE_CONFIG, getQueuePaths } from "./types";
 import { ensureQueueDirs } from "./writer";
 import { invokeClaudeNoTimeout, type ProgressCallback } from "./claude-invoke";
+import { appendMessage, truncateAtNaturalBoundary, cleanupOldThreads } from "./thread-store";
+
+/** Cleanup interval: every 100 poll cycles */
+const CLEANUP_INTERVAL_CYCLES = 100;
+
+/** Max chars for assistant response stored in thread file */
+const ASSISTANT_TRUNCATE_CHARS = 500;
 
 /**
  * Sleep helper
@@ -127,6 +134,23 @@ async function processJob(
           text: result.output,
         });
 
+        // Append assistant response to thread store (truncated at natural boundary)
+        try {
+          const truncatedResponse = truncateAtNaturalBoundary(
+            result.output,
+            ASSISTANT_TRUNCATE_CHARS
+          );
+          await appendMessage(job.thread_ts, job.channel, {
+            role: "assistant",
+            name: "pai-slack-bridge",
+            text: truncatedResponse,
+            ts: String(Date.now() / 1000), // synthetic ts for dedup
+          });
+        } catch (threadErr) {
+          // Thread store append is best-effort; don't fail the job
+          console.error("[Queue] Failed to append assistant message to thread store:", threadErr);
+        }
+
         // Move to completed
         job.completed_at = Date.now();
         const completedPath = `${paths.completed}/${jobFile}`;
@@ -226,6 +250,9 @@ export async function startQueueProcessor(config: ProcessorConfig): Promise<void
   console.log(`[Queue] Processor started, watching ${paths.pending}`);
   console.log(`[Queue] Poll interval: ${queueConfig.pollInterval}ms`);
 
+  // Track poll cycles for periodic cleanup
+  let pollCycleCount = 0;
+
   // Main processing loop
   while (true) {
     try {
@@ -244,6 +271,20 @@ export async function startQueueProcessor(config: ProcessorConfig): Promise<void
       }
     } catch (err) {
       console.error("[Queue] Error in processing loop:", err);
+    }
+
+    // Periodic thread file cleanup (every CLEANUP_INTERVAL_CYCLES polls)
+    pollCycleCount++;
+    if (pollCycleCount >= CLEANUP_INTERVAL_CYCLES) {
+      pollCycleCount = 0;
+      try {
+        const cleaned = await cleanupOldThreads(72);
+        if (cleaned > 0) {
+          console.log(`[Queue] Cleaned up ${cleaned} old thread file(s)`);
+        }
+      } catch (err) {
+        console.error("[Queue] Thread cleanup error:", err);
+      }
     }
 
     // Wait before next poll

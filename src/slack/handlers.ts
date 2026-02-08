@@ -4,20 +4,23 @@
  * Uses async queue for processing - messages are acknowledged immediately
  * and processed in background by the queue processor.
  *
- * When a message comes from a thread, the full thread history is fetched
- * and passed as context to the agent.
+ * When a message comes from a thread, the thread store manages persistent
+ * context: seed from Slack API on first encounter, then incremental appends.
  */
 
 import type { App, SlackEventMiddlewareArgs, AllMiddlewareArgs } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
 import type { Config } from "../config";
 import { queueJob } from "../queue/writer";
+import {
+  loadThreadFile,
+  appendMessage,
+  seedFromSlack,
+  formatThreadContext,
+} from "../queue/thread-store";
 
 type MessageEvent = SlackEventMiddlewareArgs<"message"> & AllMiddlewareArgs;
 type AppMentionEvent = SlackEventMiddlewareArgs<"app_mention"> & AllMiddlewareArgs;
-
-/** Max characters of thread context to include */
-const MAX_THREAD_CONTEXT_LENGTH = 8000;
 
 /**
  * Send acknowledgment message that job has been queued
@@ -74,92 +77,73 @@ function extractPrompt(text: string, botUserId?: string): string {
 }
 
 /**
- * Fetch thread history and format as conversation context.
+ * Build thread context using the local thread store.
  *
- * Calls conversations.replies to get all messages in the thread,
- * excludes bot messages, resolves user display names, and formats
- * as a readable conversation transcript.
+ * Flow:
+ * 1. Check if thread file exists (loadThreadFile)
+ * 2. If not, seed from Slack API (seedFromSlack)
+ * 3. Append the new user message
+ * 4. Format thread context with XML fencing
  *
- * Returns undefined if the message is not in a thread or the thread
- * has no prior messages.
+ * Returns formatted context string or undefined if not in a thread.
  */
-async function fetchThreadContext(
+async function buildThreadContext(
   client: WebClient,
   channel: string,
   threadTs: string,
-  currentMessageTs: string,
+  messageTs: string,
+  userName: string,
+  messageText: string,
   botUserId?: string
 ): Promise<string | undefined> {
   try {
-    const result = await client.conversations.replies({
-      channel,
-      ts: threadTs,
-      inclusive: true,
-      limit: 100,
+    // Check if we already have a thread file
+    let threadFile = await loadThreadFile(threadTs);
+
+    if (!threadFile) {
+      // First encounter with this thread: seed from Slack API
+      const bridgeBotId = botUserId || "";
+      threadFile = await seedFromSlack(threadTs, channel, bridgeBotId, client);
+    }
+
+    // Append the new user message (dedup will prevent duplicates)
+    threadFile = await appendMessage(threadTs, channel, {
+      role: "user",
+      name: userName,
+      text: messageText,
+      ts: messageTs,
     });
 
-    const messages = result.messages;
-    if (!messages || messages.length <= 1) {
-      // Only the current message exists — no prior context
+    // Format with XML fencing and prompt budget
+    if (threadFile.messages.length <= 1) {
+      // Only the current message exists - no prior context needed
       return undefined;
     }
 
-    // Build a cache of user display names
-    const userNames = new Map<string, string>();
-
-    const resolveUserName = async (userId: string): Promise<string> => {
-      if (userNames.has(userId)) return userNames.get(userId)!;
-      try {
-        const userInfo = await client.users.info({ user: userId });
-        const name =
-          userInfo.user?.profile?.display_name ||
-          userInfo.user?.real_name ||
-          userInfo.user?.name ||
-          userId;
-        userNames.set(userId, name);
-        return name;
-      } catch {
-        userNames.set(userId, userId);
-        return userId;
-      }
-    };
-
-    // Format thread messages, excluding the current message and bot messages
-    const formatted: string[] = [];
-
-    for (const msg of messages) {
-      // Skip the current message (it becomes the prompt)
-      if (msg.ts === currentMessageTs) continue;
-
-      // Skip bot messages (our own replies)
-      if (msg.bot_id) continue;
-      if (botUserId && msg.user === botUserId) continue;
-
-      // Skip messages without text
-      if (!msg.text) continue;
-
-      const userName = msg.user ? await resolveUserName(msg.user) : "unknown";
-      formatted.push(`[${userName}]: ${msg.text}`);
-    }
-
-    if (formatted.length === 0) return undefined;
-
-    let context = formatted.join("\n");
-
-    // Truncate from the beginning if too long (keep most recent messages)
-    if (context.length > MAX_THREAD_CONTEXT_LENGTH) {
-      context = context.slice(-MAX_THREAD_CONTEXT_LENGTH);
-      // Clean up partial first line
-      const firstNewline = context.indexOf("\n");
-      if (firstNewline > 0) {
-        context = "... (earlier messages truncated)\n" + context.slice(firstNewline + 1);
-      }
-    }
-
-    return context;
+    return formatThreadContext(threadFile);
   } catch (error) {
-    console.error("[Slack] Failed to fetch thread context:", error);
+    console.error("[ThreadStore] Failed to build thread context:", error);
     return undefined;
+  }
+}
+
+/**
+ * Resolve a Slack user ID to a display name.
+ */
+async function resolveUserName(
+  client: WebClient,
+  userId: string
+): Promise<string> {
+  try {
+    const userInfo = await client.users.info({ user: userId });
+    return (
+      userInfo.user?.profile?.display_name ||
+      userInfo.user?.real_name ||
+      userInfo.user?.name ||
+      userId
+    );
+  } catch {
+    return userId;
   }
 }
 
@@ -177,20 +161,23 @@ async function queueMessage(
   botUserId?: string
 ): Promise<void> {
   try {
-    // If this message is in a thread, fetch the thread history
+    // If this message is in a thread, build context from thread store
     let threadContext: string | undefined;
     if (threadTs) {
-      threadContext = await fetchThreadContext(
+      const userName = await resolveUserName(client, user);
+      threadContext = await buildThreadContext(
         client,
         channel,
         threadTs,
         messageTs,
+        userName,
+        prompt,
         botUserId
       );
 
       if (config.bridge.debugMode && threadContext) {
         console.log(
-          `[Slack] Fetched thread context (${threadContext.length} chars) for message in thread ${threadTs}`
+          `[ThreadStore] Built thread context (${threadContext.length} chars) for thread ${threadTs}`
         );
       }
     }
