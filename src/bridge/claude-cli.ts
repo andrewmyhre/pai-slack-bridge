@@ -5,6 +5,7 @@
 
 import { spawn, type Subprocess } from "bun";
 import type { Config } from "../config";
+import { markdownToMrkdwn } from "../utils/markdown-to-mrkdwn";
 
 export interface ClaudeResponse {
   success: boolean;
@@ -22,10 +23,13 @@ function stripAnsi(text: string): string {
 }
 
 /**
- * Convert output to Slack-compatible markdown
+ * Convert output to Slack-compatible mrkdwn
  */
 function formatForSlack(text: string, maxLength: number): string {
   let formatted = stripAnsi(text);
+
+  // Convert GitHub-flavored markdown to Slack mrkdwn
+  formatted = markdownToMrkdwn(formatted);
 
   // Truncate if too long (Slack limit is ~4000 chars per message)
   if (formatted.length > maxLength) {
@@ -46,7 +50,8 @@ export async function invokeClaude(
 
   try {
     const proc = spawn({
-      cmd: [config.claude.cliPath, "--print", "-p", prompt],
+      cmd: [config.claude.cliPath, "--print", "--continue", "--dangerously-skip-permissions", prompt],
+      cwd: config.claude.workingDirectory,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -111,15 +116,19 @@ export async function invokeClaudeWithSession(
   const startTime = Date.now();
 
   try {
-    const args = ["--print", "-p", prompt];
+    const args = ["--print"];
 
     // Add session continuation if we have a session ID
     if (sessionId) {
-      args.push("--continue", sessionId);
+      args.push("--resume", sessionId);
     }
+
+    // Prompt is a positional argument at the end
+    args.push(prompt);
 
     const proc = spawn({
       cmd: [config.claude.cliPath, ...args],
+      cwd: config.claude.workingDirectory,
       stdout: "pipe",
       stderr: "pipe",
     });
