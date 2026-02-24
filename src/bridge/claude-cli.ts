@@ -46,9 +46,10 @@ export async function invokeClaude(
 
   try {
     const proc = spawn({
-      cmd: [config.claude.cliPath, "--print", "-p", prompt],
+      cmd: [config.claude.cliPath, "-p", prompt],
       stdout: "pipe",
       stderr: "pipe",
+      ...(config.claude.workingDir && { cwd: config.claude.workingDir }),
     });
 
     // Set up timeout
@@ -111,7 +112,7 @@ export async function invokeClaudeWithSession(
   const startTime = Date.now();
 
   try {
-    const args = ["--print", "-p", prompt];
+    const args = ["-p", prompt];
 
     // Add session continuation if we have a session ID
     if (sessionId) {
@@ -122,6 +123,7 @@ export async function invokeClaudeWithSession(
       cmd: [config.claude.cliPath, ...args],
       stdout: "pipe",
       stderr: "pipe",
+      ...(config.claude.workingDir && { cwd: config.claude.workingDir }),
     });
 
     // Set up timeout

@@ -10,6 +10,7 @@ export interface Config {
   };
   claude: {
     cliPath: string;
+    workingDir?: string;
     timeout: number;
     maxOutputLength: number;
   };
@@ -37,6 +38,7 @@ export function loadConfig(): Config {
     },
     claude: {
       cliPath: process.env.CLAUDE_CLI_PATH || "claude",
+      workingDir: process.env.CLAUDE_WORKING_DIR,
       timeout: parseInt(process.env.CLAUDE_TIMEOUT || "120000", 10),
       maxOutputLength: parseInt(process.env.CLAUDE_MAX_OUTPUT || "4000", 10),
     },
