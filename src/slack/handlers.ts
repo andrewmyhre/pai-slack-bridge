@@ -192,6 +192,11 @@ export function registerHandlers(app: App, config: Config) {
       return;
     }
 
+    // Skip channel messages that mention the bot — handled by app_mention to avoid double-posting
+    if (!isDM && context.botUserId && text.includes(`<@${context.botUserId}>`)) {
+      return;
+    }
+
     const prompt = extractPrompt(text, context.botUserId);
     if (!prompt) return;
 
